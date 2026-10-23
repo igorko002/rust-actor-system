@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Формат коду
+        run: cargo fmt --check
+      - name: Статичний аналіз
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Тести
+        run: cargo test
+      - name: Збірка релізу
+        run: cargo build --release
+      - name: Запуск демонстрації
+        run: cargo run --release -- demo
