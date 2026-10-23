@@ -18,14 +18,21 @@ async fn run(command: Command) -> Result<(), ActorError> {
     let result = match command {
         Command::PingPong(args) => demos::ping_pong(&system, args.rounds).await,
         Command::Pool(args) => {
-            demos::pool(&system, args.workers, args.jobs.0, args.timeout_ms).await
+            demos::pool(
+                &system,
+                args.workers,
+                args.jobs.0,
+                args.timeout_ms,
+                args.inline,
+            )
+            .await
         }
         Command::Supervision(args) => demos::supervision(&system, args.max_restarts).await,
         Command::Shell => shell::run(&system).await,
         Command::Demo => {
             async {
                 demos::ping_pong(&system, 3).await?;
-                demos::pool(&system, 3, vec![1, 2, 3, 7, 13, 5, 14, 45, 8], 400).await?;
+                demos::pool(&system, 3, vec![1, 2, 3, 7, 13, 5, 14, 45, 8], 400, false).await?;
                 demos::supervision(&system, 2).await
             }
             .await
@@ -51,7 +58,12 @@ fn main() -> ExitCode {
     }
 
     // Паніки в акторах перехоплюються системою; стандартний вивід замінюємо записом у журнал.
-    std::panic::set_hook(Box::new(|info| log::debug!("перехоплено паніку: {info}")));
+    std::panic::set_hook(Box::new(|info| {
+        log::debug!(
+            "перехоплено паніку: {}",
+            info.to_string().replace('\n', " ")
+        )
+    }));
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

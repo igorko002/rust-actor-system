@@ -36,6 +36,7 @@ cargo build --release
 actor-system demo                                  # усі демонстрації
 actor-system ping-pong --rounds 5                  # обмін повідомленнями
 actor-system pool --workers 4 --jobs 1,2,7,13,45 --timeout-ms 300
+actor-system pool --workers 4 --inline             # задачі в обробнику, без фонового запуску
 actor-system supervision --max-restarts 2          # помилки, паніка, перезапуски
 actor-system shell                                 # інтерактивний режим
 actor-system --log-file run.log -v pool            # журнал у файл
@@ -51,7 +52,7 @@ actor-system --help
 ## Тестування
 
 ```bash
-cargo test                          # 16 модульних та інтеграційних тестів
+cargo test                          # 17 модульних та інтеграційних тестів
 cargo clippy --all-targets -- -D warnings
 ```
 

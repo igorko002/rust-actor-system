@@ -146,6 +146,27 @@ impl JobOutcome {
 struct Worker {
     id: usize,
     timeout: Duration,
+    /// true — задача виконується прямо в обробнику (скринька заблокована до завершення);
+    /// false — у фоновій задачі (`run_task_with_timeout`).
+    inline: bool,
+}
+
+/// Виконати задачу в обробнику з таймаутом і перехопленням паніки.
+async fn run_inline(timeout: Duration, input: u64) -> Result<u64, ActorError> {
+    use futures::FutureExt;
+    use std::panic::AssertUnwindSafe;
+    match tokio::time::timeout(timeout, AssertUnwindSafe(compute(input)).catch_unwind()).await {
+        Err(_) => Err(Box::new(TaskTimeout(timeout))),
+        Ok(Ok(result)) => result,
+        Ok(Err(payload)) => {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "невідома паніка".into());
+            Err(Box::new(PanicError(msg)))
+        }
+    }
 }
 
 enum WorkerMsg {
@@ -179,6 +200,18 @@ impl Actor for Worker {
                     self.id
                 );
                 let started = Instant::now();
+                if self.inline {
+                    let result = run_inline(self.timeout, input).await;
+                    let report = JobReport {
+                        job_id,
+                        input,
+                        worker: self.id,
+                        elapsed: started.elapsed(),
+                        outcome: JobOutcome::from_result(result),
+                    };
+                    reply_to.tell(CoordMsg::JobDone(report)).await?;
+                    return Ok(());
+                }
                 ctx.run_task_with_timeout(self.timeout, compute(input), move |result| {
                     WorkerMsg::Finished {
                         job_id,
@@ -222,6 +255,7 @@ pub struct JobReport {
 struct Coordinator {
     pool_size: usize,
     timeout: Duration,
+    inline: bool,
     workers: Vec<ActorRef<Worker>>,
     next: usize,
     pending: usize,
@@ -251,10 +285,14 @@ impl Actor for Coordinator {
     // Координатор створює дочірніх акторів під час запуску.
     async fn started(&mut self, ctx: &mut Context<Self>) -> Result<(), ActorError> {
         for id in 0..self.pool_size {
-            let timeout = self.timeout;
+            let (timeout, inline) = (self.timeout, self.inline);
             let worker = ctx.system().spawn_with(
                 format!("worker-{id}"),
-                move || Worker { id, timeout },
+                move || Worker {
+                    id,
+                    timeout,
+                    inline,
+                },
                 SpawnOptions::default(),
             )?;
             self.workers.push(worker);
@@ -294,6 +332,12 @@ impl Actor for Coordinator {
                     "  задача #{:<3} вхід {:>4}  worker-{}  {:>7.1?}  {text}",
                     report.job_id, report.input, report.worker, report.elapsed
                 );
+                log::debug!(
+                    "задача #{} (worker-{}) завершена: {:?}",
+                    report.job_id,
+                    report.worker,
+                    report.outcome
+                );
                 self.reports.push(report);
                 self.notify_if_done();
             }
@@ -312,18 +356,28 @@ pub async fn run_pool(
     workers: usize,
     jobs: Vec<u64>,
     timeout: Duration,
+    inline: bool,
 ) -> Result<Vec<JobReport>, ActorError> {
-    let coordinator = system.spawn(
+    // Скринька координатора вміщує всі звіти: інакше при великій кількості задач
+    // координатор (чекає на місце у скриньці воркера) і воркер (чекає на місце
+    // у скриньці координатора) заблокували б один одного.
+    let options = SpawnOptions {
+        mailbox_capacity: jobs.len() + 16,
+        max_restarts: 0,
+    };
+    let coordinator = system.spawn_with(
         "coordinator",
-        Coordinator {
+        move || Coordinator {
             pool_size: workers,
             timeout,
+            inline,
             workers: Vec::new(),
             next: 0,
             pending: 0,
             reports: Vec::new(),
             waiters: Vec::new(),
         },
+        options,
     )?;
     coordinator.tell(CoordMsg::Submit(jobs)).await?;
     let reports = coordinator.ask(CoordMsg::AwaitAll).await?;
@@ -337,13 +391,20 @@ pub async fn pool(
     workers: usize,
     jobs: Vec<u64>,
     timeout_ms: u64,
+    inline: bool,
 ) -> Result<(), ActorError> {
+    let mode = if inline {
+        "в обробнику"
+    } else {
+        "фонові задачі"
+    };
     println!(
-        "=== Пул воркерів: {workers} воркер(ів), {} задач(і), таймаут {timeout_ms} мс ===",
+        "=== Пул воркерів: {workers} воркер(ів), {} задач(і), таймаут {timeout_ms} мс, режим: {mode} ===",
         jobs.len()
     );
     let started = Instant::now();
-    let reports = run_pool(system, workers, jobs, Duration::from_millis(timeout_ms)).await?;
+    let timeout = Duration::from_millis(timeout_ms);
+    let reports = run_pool(system, workers, jobs, timeout, inline).await?;
     let elapsed = started.elapsed();
     let sequential: Duration = reports.iter().map(|r| r.elapsed).sum();
 
@@ -483,9 +544,15 @@ mod tests {
     async fn pool_classifies_all_outcomes() {
         std::panic::set_hook(Box::new(|_| {}));
         let system = ActorSystem::new("test");
-        let mut reports = run_pool(&system, 2, vec![3, 7, 13, 45], Duration::from_millis(150))
-            .await
-            .unwrap();
+        let mut reports = run_pool(
+            &system,
+            2,
+            vec![3, 7, 13, 45],
+            Duration::from_millis(150),
+            false,
+        )
+        .await
+        .unwrap();
         reports.sort_by_key(|r| r.job_id);
         let outcomes: Vec<_> = reports.into_iter().map(|r| r.outcome).collect();
         assert_eq!(outcomes[0], JobOutcome::Success(9));
@@ -493,5 +560,28 @@ mod tests {
         assert!(matches!(outcomes[2], JobOutcome::Panicked(_)));
         assert_eq!(outcomes[3], JobOutcome::TimedOut);
         system.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn inline_mode_and_many_jobs_do_not_deadlock() {
+        std::panic::set_hook(Box::new(|_| {}));
+        for inline in [false, true] {
+            let system = ActorSystem::new("test");
+            let jobs: Vec<u64> = (0..200).map(|i| [1, 2, 7, 13][i % 4]).collect();
+            let reports = tokio::time::timeout(
+                Duration::from_secs(30),
+                run_pool(&system, 2, jobs, Duration::from_millis(200), inline),
+            )
+            .await
+            .expect("пул не повинен зависати")
+            .unwrap();
+            assert_eq!(reports.len(), 200);
+            let panics = reports
+                .iter()
+                .filter(|r| matches!(r.outcome, JobOutcome::Panicked(_)))
+                .count();
+            assert_eq!(panics, 50);
+            system.shutdown().await;
+        }
     }
 }

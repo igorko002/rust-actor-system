@@ -52,23 +52,22 @@ impl Log for Logger {
         let elapsed = self.started.elapsed().as_secs_f64();
         let level = level_name(record.level());
 
+        // Рядок формується повністю і записується одним викликом, щоб записи
+        // з різних потоків не перемішувались посеред рядка.
         if record.level() <= self.console_level {
-            let _ = writeln!(
-                io::stderr().lock(),
-                "[{elapsed:>8.3}s] {level:<7} {}",
-                record.args()
-            );
+            let line = format!("[{elapsed:>8.3}s] {level:<7} {}\n", record.args());
+            let _ = io::stderr().lock().write_all(line.as_bytes());
         }
         if let Some(file) = &self.file
             && record.level() <= LevelFilter::Debug
             && let Ok(mut file) = file.lock()
         {
-            let _ = writeln!(
-                file,
-                "{} UTC [{elapsed:>8.3}s] {level:<7} {}",
+            let line = format!(
+                "{} UTC [{elapsed:>8.3}s] {level:<7} {}\n",
                 utc_clock(),
                 record.args()
             );
+            let _ = file.write_all(line.as_bytes());
         }
     }
 

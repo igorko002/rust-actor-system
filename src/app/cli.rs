@@ -59,6 +59,11 @@ pub struct PoolArgs {
     /// Ліміт часу на одну задачу, мс (10..=60000).
     #[arg(short, long, default_value_t = 400, value_parser = parse_timeout)]
     pub timeout_ms: u64,
+
+    /// Виконувати задачу прямо в обробнику воркера (послідовно в межах воркера),
+    /// а не у фоновій асинхронній задачі.
+    #[arg(long)]
+    pub inline: bool,
 }
 
 #[derive(Debug, Args)]
