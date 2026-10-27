@@ -167,7 +167,7 @@ impl Actor for Runner {
         match msg {
             RunnerMsg::Run(n, reply) => ctx.run_task(
                 async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                     match n {
                         0 => Err("zero".into()),
                         1 => panic!("one"),
@@ -230,8 +230,9 @@ async fn tasks_run_concurrently_without_blocking_mailbox() {
         .collect();
     let results = futures::future::join_all(asks).await;
     assert!(results.iter().all(|r| matches!(r, Ok(Ok(_)))));
-    // 10 задач по 10 мс паралельно — значно менше ніж 100 мс послідовно
-    assert!(start.elapsed() < Duration::from_millis(80));
+    // 10 задач по 50 мс паралельно — значно менше ніж 500 мс послідовно
+    // (запас на повільні CI-сервери)
+    assert!(start.elapsed() < Duration::from_millis(300));
     sys.shutdown().await;
 }
 

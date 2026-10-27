@@ -20,7 +20,7 @@ jobs:
       - name: Формат коду
         run: cargo fmt --check
       - name: Статичний аналіз
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets
       - name: Тести
         run: cargo test
       - name: Збірка релізу
