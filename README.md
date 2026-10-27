@@ -23,7 +23,7 @@
 Потрібен Rust 1.88 або новіший ([rustup.rs](https://rustup.rs)).
 
 ```bash
-git clone https://github.com/USERNAME/rust-actor-system.git
+git clone https://github.com/igorko002/rust-actor-system.git
 cd rust-actor-system
 cargo build --release
 ```
